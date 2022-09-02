@@ -19,7 +19,13 @@ maintainers = [
 urls.Documentation = "https://shears.readthedocs.io/"
 urls.Source = "https://github.com/grst/shears"
 urls.Home-page = "https://github.com/grst/shears"
-dependencies = ["anndata"]
+dependencies = [
+    "anndata",
+    "tqdm",
+    "scikit-learn",
+    "statsmodels",
+    "scanpy",
+]
 
 [project.optional-dependencies]
 dev = [
