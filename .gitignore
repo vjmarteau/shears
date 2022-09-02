@@ -1,5 +1,4 @@
-notebooks/data
-notebooks/*.ipynb
+docs/notebooks/data
 .ipynb_checkpoints
 
 # Temp files
