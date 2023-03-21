@@ -20,8 +20,10 @@ urls.Source = "https://github.com/grst/shears"
 urls.Home-page = "https://github.com/grst/shears"
 dependencies = [
     "anndata",
-    # for debug logging (referenced from the issue template)
-    "session-info"
+    "tqdm",
+    "scikit-learn",
+    "statsmodels",
+    "scanpy",
 ]
 
 [project.optional-dependencies]
