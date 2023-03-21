@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Temp files
 .DS_Store
 *~
@@ -9,17 +8,6 @@ buck-out/
 __pycache__/
 .mypy_cache/
 .ruff_cache/
-=======
-docs/notebooks/data
-.ipynb_checkpoints
-
-# Temp files
-.DS_Store
-*~
-
-# Compiled files
-__pycache__/
->>>>>>> origin/main
 
 # Distribution / packaging
 /build/
