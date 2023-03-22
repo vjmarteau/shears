@@ -9,7 +9,6 @@ import scanpy as sc
 import sklearn.preprocessing
 from anndata import AnnData
 from sklearn.linear_model import Ridge
-from sklearn.svm import NuSVR
 from threadpoolctl import threadpool_limits
 
 # TODO widget doesn't work in vscode :(
@@ -47,18 +46,10 @@ def recipe_shears(adata_sc, adata_bulk, *, n_top_genes=2000, layer_sc=None, laye
 
 
 @threadpool_limits.wrap(limits=1)
-def _deconvolute_ridge(bulk_sample, sc_mat, alpha, random_state):
+def _deconvolute(bulk_sample, sc_mat, alpha, random_state):
     model = Ridge(alpha=alpha, positive=True, random_state=random_state)
     fit = model.fit(sc_mat, bulk_sample)
     return fit.coef_
-
-
-@threadpool_limits.wrap(limits=1)
-def _deconvolute_nusvr(bulk_sample, sc_mat, alpha, random_state):
-    model = NuSVR(C=10000**2, kernel="linear")
-    fit = model.fit(sc_mat, bulk_sample)
-    # for whatever reason, this returns a sparse matrix that happens to be dense (probably because the input is sparse)
-    return fit.coef_.toarray()[0]
 
 
 def cell_weights(
@@ -72,7 +63,6 @@ def cell_weights(
     key_added="cell_weights",
     random_state=0,
     n_jobs=None,
-    method="ridge",
 ) -> Optional[pd.DataFrame]:
     """
     Computes a bulk_sample x cell matrix assigning each cell a weight for each bulk sample.
@@ -82,9 +72,8 @@ def cell_weights(
 
     If inplace is True, stores the resulting matrix in adata_sc.obsm[key_added]
     """
-    f = {"ridge": _deconvolute_ridge, "nusvr": _deconvolute_nusvr}[method]
     res = process_map(
-        f,
+        _deconvolute,
         (adata_bulk.layers[layer_bulk][i, :] for i in range(adata_bulk.shape[0])),
         itertools.repeat(adata_sc.layers[layer_sc].T),
         itertools.repeat(alpha_callback(adata_sc)),
