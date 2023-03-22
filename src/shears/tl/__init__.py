@@ -4,7 +4,8 @@ import pandas as pd
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from tqdm import tqdm
-from tqdm.contrib.concurrent import process_map
+
+from shears._util import process_map
 
 
 def _test_cell(formula, df):
@@ -39,10 +40,12 @@ def shears(
     assert "cell_weight" not in keep_cols, "cell_weight is a reserved column name"
     bulk_obs = adata_bulk.obs.loc[:, keep_cols].copy()
 
+    print(formula)
+
     def _df_iter():
         for c in adata_sc.obs_names:
             tmp_df = bulk_obs.copy()
-            tmp_df["cell_weight"] = adata_sc.obsm[cell_weights_key].loc[c, :]
+            tmp_df["cell_weight"] = adata_sc.obsm[cell_weights_key].loc[c, adata_bulk.obs_names]
             yield tmp_df
 
     res = process_map(
