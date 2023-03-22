@@ -1,3 +1,4 @@
+import statsmodels.stats.multitest
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map as tqdm_process_map
 
@@ -23,3 +24,14 @@ def process_map(fn, *iterables, **tqdm_kwargs):
         return list(tqdm_kwargs.get("tqdm_class", tqdm)(map(fn, *iterables), total=tqdm_kwargs.get("total", None)))
     else:
         return tqdm_process_map(fn, *iterables, **tqdm_kwargs)
+
+
+def fdr_correction(df, pvalue_col="pvalue", *, key_added="fdr", inplace=False):
+    """Adjust p-values in a data frame with test results using FDR correction."""
+    if not inplace:
+        df = df.copy()
+
+    df[key_added] = statsmodels.stats.multitest.fdrcorrection(df[pvalue_col].values)[1]
+
+    if not inplace:
+        return df

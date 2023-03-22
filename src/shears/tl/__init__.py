@@ -1,5 +1,6 @@
 import itertools
 
+import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
@@ -59,3 +60,50 @@ def shears(
     )
 
     return pd.DataFrame(res, index=adata_sc.obs_names, columns=["pvalue", "coef"])
+
+
+def get_scaling_factor(adata_sc, cell_type_col, *, weight_col="n_genes", callback=np.median):
+    """Get scaling factors per cell-type.
+
+    Corrects for the number of cells per dataset and the mRNA content of cells.
+
+    Parameters
+    ----------
+    adata_sc
+        single cell AnnData
+    cell_type_col
+        column in adata_sc.obs that holds cell-type information
+    weight_col
+        column in adata.obs that holds a cell weight to correc for mRNA bias. Viable options are
+        the number of detected genese or the number of total counts per cell. See Dietrich et al. for
+        more details
+    callback
+        Aggregate the values in weight_col by cell_type using this function.
+    """
+    # multiply weights with the number of cells (if there are many cells of a type in the single-cell dataset,
+    # the factors will distribute across more cells and the weights dilute)
+    n_cells = adata_sc.obs[cell_type_col].value_counts()
+
+    # divide by a scaling factor to account for mRNA contents. Gene expression is normalized,
+    # therefore e.g. Neutrophils (low mRNA) and Macrophages (high mRNA) have the same amount of normalized counts.
+    # However, if they get the same weight, there will be more Neutrophils in the bulk sample,
+    # because they contribute less mRNA to the bulk sample.
+    cell_weight = adata_sc.obs[weight_col].groupby(adata_sc.obs[cell_type_col]).agg(callback)
+
+    factor = n_cells / cell_weight
+    return factor.reindex(adata_sc.obs[cell_type_col])
+
+
+def cell_type_fractions(adata_sc, cell_type_col, as_fraction=True, bias_correction=True):
+    """Compute cell-type fractions from cell weights"""
+    cell_weights = adata_sc.obsm["cell_weights"]
+
+    if bias_correction:
+        cell_weights = cell_weights.multiply(get_scaling_factor(adata_sc, cell_type_col).values, axis=0)
+
+    df = cell_weights.groupby(adata_sc.obs[cell_type_col]).agg(sum)
+
+    if as_fraction:
+        df = df.div(df.sum(axis=0).to_dict())
+
+    return df
