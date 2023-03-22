@@ -2,11 +2,12 @@ import itertools
 
 import numpy as np
 import pandas as pd
+import scipy.stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from tqdm import tqdm
 
-from shears._util import process_map
+from shears._util import fdr_correction, process_map
 
 
 def _test_cell(formula, df):
@@ -107,3 +108,31 @@ def cell_type_fractions(adata_sc, cell_type_col, as_fraction=True, bias_correcti
         df = df.div(df.sum(axis=0).to_dict())
 
     return df
+
+
+def shears_stats(adata_sc, res, groupby, batch_key: str):
+    """Compute statistics on shears results"""
+    df = res.assign(weight=lambda x: x["coef"] * -np.log10(x["pvalue"])).assign(
+        group=adata_sc.obs[groupby], replicate=adata_sc.obs[batch_key]
+    )
+    df = (
+        df.groupby(["group", "replicate"], observed=True)
+        .agg(mean_weight=pd.NamedAgg(column="weight", aggfunc=np.mean))
+        .reset_index()
+    )
+    stats_df = (
+        df.groupby("group")
+        .apply(
+            lambda x: pd.Series(
+                {
+                    "median_weight": np.median(x["mean_weight"]),
+                    # **scipy.stats.ttest_1samp(x["mean_weight"], 0)._asdict(),
+                    **scipy.stats.wilcoxon(x["mean_weight"])._asdict(),
+                }
+            )
+        )
+        .reset_index()
+        .pipe(fdr_correction)
+        .sort_values("pvalue")
+    )
+    return df.merge(stats_df, on="group", how="left")
