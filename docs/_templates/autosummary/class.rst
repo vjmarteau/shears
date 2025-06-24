@@ -14,6 +14,8 @@ Attributes table
 .. autosummary::
 {% for item in attributes %}
     ~{{ name }}.{{ item }}
+~~~~~~~~~~~~~~~~~~
+
 {%- endfor %}
 {% endif %}
 {% endblock %}
@@ -36,6 +38,7 @@ Methods table
 {% if attributes %}
 Attributes
 ~~~~~~~~~~
+
 
 {% for item in attributes %}
 

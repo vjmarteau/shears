@@ -57,6 +57,7 @@ Pre-commit will automatically download all dependencies when it is run for the f
 Alternatively, you can rely on the [pre-commit.ci][] service enabled on GitHub.
 If you didn't run `pre-commit` before pushing changes to GitHub it will automatically commit fixes to your pull request, or show an error message.
 
+
 If pre-commit.ci added a commit on a branch you still have been working on locally, simply use
 
 ```bash
@@ -173,6 +174,7 @@ See scanpy’s {doc}`scanpy:dev/documentation` for more information on how to wr
 
 The documentation is set-up to render jupyter notebooks stored in the `docs/notebooks` directory using [myst-nb][].
 Currently, only notebooks in `.ipynb` format are supported that will be included with both their input and output cells.
+
 It is your responsibility to update and re-run the notebook whenever necessary.
 
 If you are interested in automatically running notebooks as part of the continuous integration,
@@ -212,3 +214,23 @@ make html
 
 ::::
 :::::
+
+If you are interested in automatically running notebooks as part of the continuous integration, please check
+out [this feature request](https://github.com/scverse/cookiecutter-scverse/issues/40) in the `cookiecutter-scverse`
+repository.
+
+#### Hints
+
+-   If you refer to objects from other packages, please add an entry to `intersphinx_mapping` in `docs/conf.py`. Only
+    if you do so can sphinx automatically create a link to the external documentation.
+-   If building the documentation fails because of a missing link that is outside your control, you can add an entry to
+    the `nitpick_ignore` list in `docs/conf.py`
+
+#### Building the docs locally
+
+```bash
+cd docs
+make html
+open _build/html/index.html
+```
+

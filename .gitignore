@@ -1,3 +1,5 @@
+docs/notebooks/data
+
 # Temp files
 .DS_Store
 *~
@@ -14,7 +16,23 @@ __pycache__/
 # Tests and coverage
 /data/
 /node_modules/
+.mypy_cache/
+.ruff_cache/
+
+# Distribution / packaging
+/build/
+/dist/
+/*.egg-info/
+
+# Tests and coverage
+/.pytest_cache/
+/.cache/
+/data/
 
 # docs
 /docs/generated/
 /docs/_build/
+
+# IDEs
+/.idea/
+/.vscode/
