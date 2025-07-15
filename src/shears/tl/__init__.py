@@ -1,172 +1,276 @@
 import functools
-import inspect
-import itertools
+import logging
 import warnings
-from typing import Any, Literal, Optional, Union
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
 import scipy.stats
 import statsmodels.api as sm
-import statsmodels.formula.api as smf
 from anndata import AnnData
+from formulaic import model_matrix
 from lifelines import CoxPHFitter
 from lifelines.utils import ConvergenceWarning
-from shears._util import fdr_correction, process_map
-from tqdm import tqdm
+from shears._util import _cell_worker_map, fdr_correction
+from statsmodels.genmod.families.family import Family
+from threadpoolctl import threadpool_limits
 
-# Near-zero variance in cell_weight causes expected convergence warnings when fitting
-warnings.filterwarnings("ignore", category=ConvergenceWarning)
-# This second warning will only aappear when using the strata argument in lifelines cph.fit and can be remoed when lifelines is updated.
-warnings.filterwarnings("ignore", category=FutureWarning, message=".*observed=False is deprecated.*")
-
-# Module-level globals for pre-loaded data
-_BULK_OBS = None
-_WEIGHTS = None
+logger = logging.getLogger(__name__)
 
 
-def _test_cell(cell_name, *, formula, family, duration_col, event_col, init_kwargs, fit_kwargs):
+def _prepare_bulk_obs_and_weights(
+    adata_sc,
+    adata_bulk,
+    cell_weights_key,
+    covariate_str,
+    response_cols,
+    init_kwargs=None,
+):
+    """Build the regression formula, subset bulk.obs for required variables, and retrieve per-cell weights."""
 
-    df = _BULK_OBS.copy(deep=False)
-    df["cell_weight"] = _WEIGHTS.loc[cell_name, df.index]
+    init_kwargs = init_kwargs or {}
 
-    if family == "cox":
+    cov = (covariate_str or "").strip(" +")
+    covariate_term = f" + {cov}" if cov else ""
+
+    if len(response_cols) == 1:
+        formula = f"{response_cols[0]} ~ cell_weight{covariate_term}"
+    else:
+        formula = f"cell_weight{covariate_term}"
+
+    covariate_list = [
+        term.strip().split("(", 1)[-1].split(",", 1)[0].strip()
+        for term in cov.split("+")
+        if term.strip()
+    ]
+
+    keep = [
+        c
+        for c in (
+            response_cols
+            + covariate_list
+            + (list(next(iter(init_kwargs.values()))) if init_kwargs else [])
+        )
+        if c in adata_bulk.obs.columns
+    ]
+
+    assert "cell_weight" not in adata_bulk.obs.columns, "cell_weight is reserved"
+
+    bulk_obs = adata_bulk.obs.loc[:, keep].copy()
+    bulk_obs["cell_weight"] = 0.0
+
+    nan_cols = bulk_obs.columns[bulk_obs.isnull().any()].tolist()
+    if nan_cols:
+        raise ValueError(f"bulk metadata contains NaNs in columns: {nan_cols!r}")
+
+    weights_df = adata_sc.obsm[cell_weights_key].loc[:, bulk_obs.index]
+
+    return formula, bulk_obs, weights_df
+
+
+def _test_cell_glm(endog_array, exog_array, cell_weights, family, init_kwargs, fit_kwargs):
+    """Compute Wald p-value and coefficient for `cell_weights` by fitting a GLM with the provided family."""
+
+    X = exog_array.copy()
+    X[:, -1] = cell_weights
+
+    with threadpool_limits(limits=1):
+        res = sm.GLM(endog_array, X, family=family, **init_kwargs).fit(**fit_kwargs)
+
+    return float(res.pvalues[-1]), float(res.params[-1])
+
+
+def shears_glm(
+    adata_sc: AnnData,
+    adata_bulk: AnnData,
+    dep_var: str,
+    *,
+    family: Family = sm.families.Binomial(),
+    covariate_str: Optional[str] = None,
+    cell_weights_key: str = "cell_weights",
+    key_added: str = "shears",
+    n_jobs: Optional[int] = None,
+    inplace: bool = True,
+    init_kwargs: Optional[Dict[str, Any]] = None,
+    fit_kwargs: Optional[Dict[str, Any]] = None,
+) -> pd.DataFrame:
+    """
+    Compute per-cell association coefficients between single-cell weights and bulk phenotypes fitting a 
+    generalized linear model of the form:
+       
+           dep_var ~ cell_weight + (optional covariates)
+
+    adata_sc
+        Annotated single cell AnnData with precomputed cell weights in `.obsm[cell_weights_key]`.
+    adata_bulk
+        Bulk AnnData with outcomes and covariates in `.obs`.
+    dep_var
+        Name of the dependent variable column in `adata_bulk.obs` to model.
+    family
+        A statsmodels `Family` instance such as `sm.families.Binomial()` for logistic regression on binary outcomes or `sm.families.Gaussian()`
+         for ordinary least squares on continuous data.
+    covariate_str
+        Optional formulaic-style strings of covariates to adjust for (e.g. `"age_scaled + C(sex, Treatment(reference='male')) + batch"`).
+    cell_weights_key
+        Key in `adata_sc.obsm` where per-cell weights are stored.
+    key_added
+        Column name under which to save the estimated coefficients and pvalues in `adata_sc.obs` if
+        `inplace=True`.
+    n_jobs
+        Number of parallel worker processes. If `None`, uses joblib’s default. Positive values
+        set an exact number, `1` disables parallelism, negative values select relative to
+        CPU count (e.g., `-1` = all cores).
+    inplace
+        If True, writes the coefficient and pvalue into `adata_sc.obs[key_added]`.
+    init_kwargs
+        Optional dict of keyword args passed to `sm.GLM(..., **init_kwargs)`.
+    fit_kwargs
+        Optional dict of keyword args passed to the `.fit(**fit_kwargs)` call.
+    
+    Returns
+    -------
+    Depending on the value of `inplace` either adds two columns to
+    `adata.obs` or returns a DataFrame with columns `"coef"` and `"pvalue"`
+    """
+
+    init_kwargs = init_kwargs or {}
+    fit_kwargs = fit_kwargs or {}
+
+    formula, bulk_obs, weights_df = _prepare_bulk_obs_and_weights(
+        adata_sc,
+        adata_bulk,
+        cell_weights_key,
+        covariate_str,
+        response_cols=[dep_var],
+    )
+    logger.debug("Fitting model with formula: %s", formula)
+
+    response_df, predictors_df = model_matrix(formula, bulk_obs)
+    endog = response_df.iloc[:, 0].to_numpy()
+    exog = predictors_df.to_numpy()
+
+    worker = functools.partial(
+        _test_cell_glm,
+        endog,
+        exog,
+        family=family,
+        init_kwargs=init_kwargs,
+        fit_kwargs=fit_kwargs,
+    )
+    df_res = _cell_worker_map(weights_df, worker, n_jobs=n_jobs, backend="loky")
+
+    if inplace:
+        adata_sc.obs[f"{key_added}_coef"] = df_res["coef"]
+        adata_sc.obs[f"{key_added}_pvalue"] = df_res["pvalue"]
+    return df_res
+
+
+def _test_cell_cox(cell_weights, bulk_obs, duration_col, event_col, formula, init_kwargs, fit_kwargs):
+    """Fit a lifelines CoxPH model on `bulk_obs` using `cell_weights` and return the Wald p-value and log-hazard coefficient."""
+
+    # Near-zero variance in cell_weight causes expected convergence warnings when fitting
+    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+    # This second warning will only appear when using the strata argument in lifelines cph.fit and can be removed when lifelines is updated.
+    warnings.filterwarnings(
+        "ignore", category=FutureWarning, message=".*observed=False is deprecated.*"
+    )
+
+    bulk_obs = bulk_obs.copy()
+    bulk_obs["cell_weight"] = cell_weights
+
+    with threadpool_limits(limits=1):
         cph = CoxPHFitter(**init_kwargs)
         cph.fit(
-            df,
+            bulk_obs,
             duration_col=duration_col,
             event_col=event_col,
             formula=formula,
-            **fit_kwargs,
+            **fit_kwargs
         )
-        pval = cph.summary.at["cell_weight", "p"]
-        coef = cph.summary.at["cell_weight", "coef"]
-    else:
-        fam = sm.families.Binomial() if family == "binomial" else sm.families.Gaussian()
-        res = smf.glm(formula, data=df, family=fam).fit()
-        pval = res.pvalues["cell_weight"]
-        coef = res.params["cell_weight"]
 
+    pval = cph.summary.at["cell_weight", "p"]
+    coef = cph.summary.at["cell_weight", "coef"]
     return float(pval), float(coef)
 
 
-def shears(
-    adata_sc: AnnData,
-    adata_bulk: AnnData,
-    *,
-    dep_var: str = "",
-    covariate_str: str = "",
-    inplace: bool = True,
-    cell_weights_key: str = "cell_weights",
-    key_added: str = "shears",
-    family: Literal["binomial", "gaussian", "cox"] = "binomial",
+def shears_cox(
+    adata_sc,
+    adata_bulk,
     duration_col: str = "OS_time",
     event_col: str = "OS_status",
+    *,
+    covariate_str: Optional[str] = None,
+    cell_weights_key: str = "cell_weights",
+    key_added: str = "shears",
     n_jobs: Optional[int] = None,
-    **kwargs: Any,
+    inplace: bool = True,
+    init_kwargs: Optional[Dict[str, Any]] = None,
+    fit_kwargs: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     """
-    Compute per-cell association scores between single-cell weights and bulk phenotypes.
-
-    Shears performs a two-step deconvolution and regression procedure:
-
-    1. **Weight estimation**: pre-computed `cell_weights_key` (from `adata_sc.obsm`) deconvolves
-       bulk expression profiles (`adata_bulk.obs`) into per-cell contributions via ridge regression.
-    2. **Per-cell testing**: for each cell, fit a regression model of the form:
-       - GLM for binary (`family="binomial"`) or continuous (`family="gaussian"`) outcomes:
-         `dep_var ~ cell_weight + covariates`
-       - Cox proportional hazards for survival outcome (`family="cox"`) defined by duration_col and event_col: 
-         `cell_weight + covariates`
-    The coefficient of `cell_weight` quantifies each cell's association with the bulk phenotype,
-    and its p-value measures significance, controlling for additional covariates.
-
-    Parallel execution is enabled via `n_jobs`; set `n_jobs=1` to run single-threaded
+    Compute per-cell association coefficients between single-cell weights and time-to-event outcomes
+    by fitting a Cox proportional hazards model using lifelines.CoxPHFitter.
 
     Parameters
     ----------
     adata_sc
-        Annotated single-cell data (`AnnData`) with precomputed cell weights in `.obsm[cell_weights_key]`.
+        Annotated single cell AnnData with precomputed cell weights in `.obsm[cell_weights_key]`.
     adata_bulk
-        Bulk sample metadata (`AnnData`) with outcomes and covariates in `.obs`.
-    dep_var
-        Dependent variable for GLM families (ignored if `family="cox"`).
-    covariate_str
-        Additional covariates (e.g. "+ age + sex + batch") inserted into the model formula.
-    inplace
-        If True, writes the resulting coefficients into `adata_sc.obs[key_added]`.
-    key_added
-        Column name under which to save per-cell coefficients in `adata_sc.obs`.
-    family
-        Model type: "binomial", "gaussian", or "cox" for survival analysis.
+        Bulk AnnData object with survival data and covariates in `.obs`.
     duration_col
-        Column name in `adata_bulk.obs` for survival durations (when `family="cox"`).
+        Column name in `adata_bulk.obs` containing follow-up or survival time.
     event_col
-        Column name in `adata_bulk.obs` for event indicators (when `family="cox"`).
+        Column name in `adata_bulk.obs` containing event indicator (1=event occurred, 0=censored).
+    covariate_str
+        Optional formulaic-style strings of covariates to adjust for (e.g. `"age_scaled + C(sex, Treatment(reference='male')) + batch"`).
+    cell_weights_key
+        Key in `adata_sc.obsm` under which per-cell weights are stored.
+    key_added
+        Column name under which to save the estimated coefficients in `adata_sc.obs` if `inplace=True`.
     n_jobs
-        Number of workers for parallel mapping. Use `n_jobs=1` to disable multiprocessing.
-    **kwargs
-        Additional keyword arguments for the Lifelines CoxPHFitter (e.g., `penalizer`, `l1_ratio`,
-        `fit_options`), allowing customization of regularization and convergence settings.
+        Number of parallel worker processes. If `None`, uses joblib’s default. Positive values
+        set an exact number, `1` disables parallelism, negative values select relative to
+        CPU count (e.g., `-1` = all cores).
+    inplace
+        If `True`, writes the `"coef"` and `"pvalue"` columns into `adata_sc.obs[key_added]`.
+    init_kwargs
+        Additional keyword arguments passed to the Cox model constructor.
+    fit_kwargs
+        Additional keyword arguments passed to the `.fit(**fit_kwargs)` call.
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame indexed by cell names with columns ["pvalue", "coef"].
+    DataFrame
+       Depending on the value of `inplace` either adds two columns to `adata.obs` or returns a DataFrame with columns `"coef"` and `"pvalue"`
     """
 
-    if family == "cox":
-        formula = f"cell_weight {covariate_str}"
+    init_kwargs = init_kwargs or {}
+    fit_kwargs = fit_kwargs or {}
 
-        init_params = set(inspect.signature(CoxPHFitter.__init__).parameters) - {"self"}
-        fit_params = set(inspect.signature(CoxPHFitter.fit).parameters) - {"self"}
-
-        init_kwargs = {k: v for k, v in kwargs.items() if k in init_params}
-        fit_kwargs = {k: v for k, v in kwargs.items() if k in fit_params}
-        keep = [c for c in adata_bulk.obs.columns if c in (event_col + duration_col + covariate_str + str(fit_kwargs))]
-
-        unused = set(kwargs) - init_kwargs.keys() - fit_kwargs.keys()
-        if unused:
-            raise TypeError(f"Unexpected CoxPHFitter parameters: {unused}")
-    else:
-        formula = f"{dep_var} ~ cell_weight {covariate_str}"
-        keep = [c for c in adata_bulk.obs.columns if c in (dep_var + covariate_str)]
-        init_kwargs = {}
-        fit_kwargs  = {}
-
-    assert "cell_weight" not in keep, "cell_weight is reserved"
-    print("Formula:", formula)
-
-    bulk_obs = adata_bulk.obs.loc[:, keep].copy()
-    weights_df = adata_sc.obsm[cell_weights_key]
-    cell_names = list(adata_sc.obs_names)
-
-    # stash into globals so workers inherit them on fork
-    global _BULK_OBS, _WEIGHTS
-    _BULK_OBS = bulk_obs
-    _WEIGHTS = weights_df
+    formula, bulk_obs, weights_df = _prepare_bulk_obs_and_weights(
+        adata_sc,
+        adata_bulk,
+        cell_weights_key,
+        covariate_str,
+        response_cols=[duration_col, event_col],
+        init_kwargs=init_kwargs,
+    )
+    logger.debug("Fitting model with formula: %s", formula)
 
     worker = functools.partial(
-        _test_cell,
-        formula=formula,
-        family=family,
+        _test_cell_cox,
+        bulk_obs=bulk_obs,
         duration_col=duration_col,
         event_col=event_col,
+        formula=formula,
         init_kwargs=init_kwargs,
         fit_kwargs=fit_kwargs,
     )
+    df_res = _cell_worker_map(weights_df, worker, n_jobs=n_jobs, backend="loky")
 
-    res_list = process_map(
-        worker,
-        cell_names,
-        max_workers=n_jobs,
-        chunksize=100,
-        total=len(cell_names),
-        tqdm_class=tqdm,
-    )
-
-    df_res = pd.DataFrame(res_list, index=cell_names, columns=["pvalue", "coef"])
     if inplace:
-        adata_sc.obs[key_added] = df_res["coef"]
+        adata_sc.obs[f"{key_added}_coef"] = df_res["coef"]
+        adata_sc.obs[f"{key_added}_pvalue"] = df_res["pvalue"]
     return df_res
 
 
