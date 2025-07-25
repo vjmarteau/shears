@@ -3,8 +3,8 @@
 [![Tests][badge-tests]][link-tests]
 [![Documentation][badge-docs]][link-docs]
 
-[badge-tests]: https://img.shields.io/github/actions/workflow/status/grst/shears/test.yaml?branch=main
-[link-tests]: https://github.com/grst/shears/actions/workflows/test.yml
+[badge-tests]: https://img.shields.io/github/actions/workflow/status/icbi-lab/shears/test.yaml?branch=main
+[link-tests]: https://github.com/icbi-lab/shears/actions/workflows/test.yml
 [badge-docs]: https://img.shields.io/readthedocs/shears
 
 shears are more powerful scissors
@@ -17,7 +17,7 @@ Please refer to the [documentation][link-docs]. In particular, the
 
 ## Installation
 
-You need to have Python 3.8 or newer installed on your system. If you don't have
+You need to have Python 3.10 or newer installed on your system. If you don't have
 Python installed, we recommend installing [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge).
 
 There are several alternative options to install shears:
@@ -33,7 +33,7 @@ pip install shears
 1. Install the latest development version:
 
 ```bash
-pip install git+https://github.com/grst/shears.git@main
+pip install git+https://github.com/icbi-lab/shears.git@main
 ```
 
 ## Release notes
@@ -50,7 +50,7 @@ If you found a bug, please use the [issue tracker][issue-tracker].
 > t.b.a
 
 [scverse-discourse]: https://discourse.scverse.org/
-[issue-tracker]: https://github.com/grst/shears/issues
+[issue-tracker]: https://github.com/icbi-lab/shears/issues
 [changelog]: https://shears.readthedocs.io/latest/changelog.html
 [link-docs]: https://shears.readthedocs.io
 [link-api]: https://shears.readthedocs.io/latest/api.html

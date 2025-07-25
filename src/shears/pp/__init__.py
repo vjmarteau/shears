@@ -1,6 +1,7 @@
 import itertools
+import logging
 import warnings
-from typing import Optional
+from typing import Iterator, List, Optional, Tuple
 
 import anndata
 import numpy as np
@@ -8,22 +9,23 @@ import pandas as pd
 import scanpy as sc
 import sklearn.preprocessing
 from anndata import AnnData
+from joblib import Parallel, delayed
+from scipy import sparse
+from scipy.stats import pearsonr
 from sklearn.linear_model import Ridge
 from threadpoolctl import threadpool_limits
-
-# TODO widget doesn't work in vscode :(
-# from tqdm.auto import tqdm
 from tqdm import tqdm
-from tqdm.contrib.concurrent import process_map
+
+from shears._util import fdr_correction, _parallelize_with_joblib
 
 
-def quantile_norm(adata: AnnData, *, layer=None, key_added="quantile_norm"):
+def quantile_norm(adata: AnnData, *, layer=None, key_added="quantile_norm", **kwargs):
     """Perform quantile normalization on AnnData object
 
     Stores the normalized data in a new layer with the key `key_added`.
     """
     X = adata.X if layer is None else adata.layers[layer]
-    adata.layers[key_added] = sklearn.preprocessing.quantile_transform(X)
+    adata.layers[key_added] = sklearn.preprocessing.quantile_transform(X, **kwargs)
 
 
 def recipe_shears(adata_sc, adata_bulk, *, n_top_genes=2000, layer_sc=None, layer_bulk=None, key_added="quantile_norm"):
@@ -45,10 +47,10 @@ def recipe_shears(adata_sc, adata_bulk, *, n_top_genes=2000, layer_sc=None, laye
     return adata_sc, adata_bulk
 
 
-@threadpool_limits.wrap(limits=1)
 def _deconvolute(bulk_sample, sc_mat, alpha, random_state):
-    model = Ridge(alpha=alpha, positive=True, random_state=random_state)
-    fit = model.fit(sc_mat, bulk_sample)
+    with threadpool_limits(limits=1):
+        model = Ridge(alpha=alpha, positive=True, random_state=random_state)
+        fit = model.fit(sc_mat, bulk_sample)
     return fit.coef_
 
 
@@ -63,6 +65,7 @@ def cell_weights(
     key_added="cell_weights",
     random_state=0,
     n_jobs=None,
+    backend="loky",
 ) -> Optional[pd.DataFrame]:
     """
     Computes a bulk_sample x cell matrix assigning each cell a weight for each bulk sample.
@@ -72,21 +75,34 @@ def cell_weights(
 
     If inplace is True, stores the resulting matrix in adata_sc.obsm[key_added]
     """
-    res = process_map(
-        _deconvolute,
-        (adata_bulk.layers[layer_bulk][i, :] for i in range(adata_bulk.shape[0])),
-        itertools.repeat(adata_sc.layers[layer_sc].T),
-        itertools.repeat(alpha_callback(adata_sc)),
-        itertools.repeat(random_state),
-        max_workers=n_jobs,
-        chunksize=10,
-        tqdm_class=tqdm,
-        total=adata_bulk.shape[0],
+
+    assert all(adata_sc.var_names == adata_bulk.var_names), "var_names are not in the same order or are not the same"
+
+    # convert sparse bulk layer to dense 1D arrays -> when obs > 1000 scanpy seems to auto convert to sparse ...
+    if sparse.issparse(adata_bulk.layers[layer_bulk]):
+        adata_bulk.layers[layer_bulk] = adata_bulk.layers[layer_bulk].toarray()
+
+    jobs = (
+        delayed(_deconvolute)(
+            adata_bulk.layers[layer_bulk][i, :],
+            adata_sc.layers[layer_sc].T,
+            alpha_callback(adata_sc),
+            random_state,
+        )
+        for i in range(adata_bulk.shape[0])
     )
 
-    res = pd.DataFrame(np.array(res).T, index=adata_sc.obs_names, columns=adata_bulk.obs_names)
+    weights_list = list(
+        _parallelize_with_joblib(
+            jobs, total=adata_bulk.shape[0], n_jobs=n_jobs, backend=backend
+        )
+    )
+
+    res = pd.DataFrame(
+        np.array(weights_list).T, index=adata_sc.obs_names, columns=adata_bulk.obs_names
+    )
 
     if inplace:
         adata_sc.obsm[key_added] = res
     else:
-        return res
+        return res_df

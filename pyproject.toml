@@ -13,6 +13,7 @@ maintainers = [
 ]
 authors = [
   { name = "Gregor Sturm" },
+  { name = "Valentin Marteau" },
 ]
 requires-python = ">=3.10"
 classifiers = [
@@ -25,6 +26,7 @@ classifiers = [
 dependencies = [
     "anndata",
     "tqdm",
+    "lifelines",
     "scikit-learn",
     "statsmodels",
     "scanpy",
@@ -55,8 +57,8 @@ optional-dependencies.test = [
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://shears.readthedocs.io/"
-urls.Homepage = "https://github.com/grst/shears"
-urls.Source = "https://github.com/grst/shears"
+urls.Homepage = "https://github.com/icbi-lab/shears"
+urls.Source = "https://github.com/icbi-lab/shears"
 
 [tool.hatch.envs.default]
 installer = "uv"
