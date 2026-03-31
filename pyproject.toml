@@ -4,33 +4,47 @@ requires = [ "hatchling" ]
 
 [project]
 name = "shears"
-version = "0.0.1"
+version = "0.0.2"
 description = " shears are more powerful scissors "
 readme = "README.md"
 license = { file = "LICENSE" }
 maintainers = [
   { name = "Gregor Sturm", email = "mail@gregor-sturm.de" },
+  { name = "Valentin Marteau", email = "vjmarteau@gmail.com" },
 ]
 authors = [
   { name = "Gregor Sturm" },
   { name = "Valentin Marteau" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "anndata",
-    "tqdm",
-    "lifelines",
-    "scikit-learn",
-    "statsmodels",
-    "scanpy",
+  "anndata",
+  "formulaic",
+  "joblib",
+  "numpy",
+  "pandas",
+  "scanpy",
+  "scikit-learn",
+  "scipy",
+  "statsmodels",
+  "threadpoolctl",
+  "tqdm",
 ]
+optional-dependencies.signatures = [
+  "decoupler>=1.4.0",
+  "pydeseq2>=0.4.1",
+  ]
+optional-dependencies.all = [
+  "lifelines",
+  "decoupler>=1.4.0",
+  "pydeseq2>=0.4.1",
+  ]
 optional-dependencies.dev = [
   "pre-commit",
   "twine>=4.0.2",
@@ -55,7 +69,7 @@ optional-dependencies.test = [
   "coverage",
   "pytest",
 ]
-# https://docs.pypi.org/project_metadata/#project-urls
+
 urls.Documentation = "https://shears.readthedocs.io/"
 urls.Homepage = "https://github.com/icbi-lab/shears"
 urls.Source = "https://github.com/icbi-lab/shears"
@@ -136,4 +150,5 @@ skip = [
   "docs/references.bib",
   "docs/references.md",
   "docs/notebooks/example.ipynb",
+  "docs/notebooks/tutorial.ipynb",
 ]
